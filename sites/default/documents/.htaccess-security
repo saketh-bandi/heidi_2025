@@ -1,0 +1,10 @@
+# AI-generated code - Security configuration for OpenEMR documents directory
+# This file helps secure patient documents from direct web access
+
+# Deny all access to this directory
+Deny from all
+
+# Alternative Apache 2.4+ syntax
+<IfModule mod_authz_core.c>
+    Require all denied
+</IfModule>
