@@ -517,6 +517,252 @@ $oemr_ui = new OemrUI($arrOeUiSettings);
             }
         }
 
+        // AI-generated code section begins
+        // ========================================
+        // HEIDI REFERRAL WORKFLOW FUNCTIONS
+        // ========================================
+        const FLASK_API_URL = 'http://localhost:5001';
+
+        // Get all session IDs from the page
+        function getAllSessionIds() {
+            const sessions = [];
+            document.querySelectorAll('[data-session-id]').forEach(el => {
+                sessions.push(parseInt(el.getAttribute('data-session-id')));
+            });
+            return sessions;
+        }
+
+        // Main function: Analyze all sessions for referrals
+        async function analyzeForReferrals() {
+            const statusEl = document.getElementById('workflow-status');
+            const container = document.getElementById('recommendations-container');
+            const tbody = document.getElementById('recommendations-body');
+            
+            // Show loading state
+            statusEl.innerHTML = '<span class="text-info"><i class="fa fa-spinner fa-spin"></i> Analyzing sessions...</span>';
+            tbody.innerHTML = '';
+            container.style.display = 'none';
+            
+            // Get all session IDs from the session cards
+            const sessionIds = [];
+            document.querySelectorAll('.heidi-session-item').forEach(card => {
+                const collapseId = card.querySelector('[data-target]').getAttribute('data-target');
+                const sessionId = collapseId.replace('#heidi_session_', '');
+                sessionIds.push(parseInt(sessionId));
+            });
+            
+            if (sessionIds.length === 0) {
+                statusEl.innerHTML = '<span class="text-warning">No sessions found</span>';
+                return;
+            }
+            
+            let foundReferrals = 0;
+            const pdfsToOpen = []; // Track all PDFs to open after processing
+            
+            // Analyze each session
+            for (const sessionId of sessionIds) {
+                try {
+                    console.log('='.repeat(60));
+                    console.log(`🔍 Analyzing session ID: ${sessionId}`);
+                    console.log(`📤 Sending to: ${FLASK_API_URL}/api/analyze-referral`);
+                    console.log(`📦 Request body:`, { session_id: sessionId });
+                    
+                    const response = await fetch(`${FLASK_API_URL}/api/analyze-referral`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ session_id: sessionId })
+                    });
+                    
+                    console.log(`📥 Response status: ${response.status}`);
+                    
+                    const data = await response.json();
+                    
+                    console.log('📋 FULL BACKEND RESPONSE:');
+                    console.log(JSON.stringify(data, null, 2));
+                    
+                    if (data.recommendation) {
+                        console.log('🔬 Recommendation Details:');
+                        console.log('  - clinical_triage_note:', data.recommendation.clinical_triage_note);
+                        console.log('  - predictive_alert:', data.recommendation.predictive_alert);
+                        console.log('  - clinical_summary:', data.recommendation.clinical_summary);
+                    }
+                    console.log('='.repeat(60));
+                    
+                    if (data.status === 'success') {
+                        displayRecommendation(data.recommendation_id, data.recommendation);
+                        foundReferrals++;
+                        
+                        // Track PDF if available (FIXED: moved inside loop)
+                        if (data.recommendation && data.recommendation.pdf_filename) {
+                            pdfsToOpen.push(data.recommendation.pdf_filename);
+                        }
+                    } else if (data.status === 'ignored') {
+                        console.log(`Session ${sessionId}: ${data.message}`);
+                    } else {
+                        console.error(`Session ${sessionId}: ${data.message}`);
+                    }
+                } catch (error) {
+                    console.error(`❌ Error analyzing session ${sessionId}:`, error);
+                }
+            }
+            
+            // Update status
+            if (foundReferrals > 0) {
+                statusEl.innerHTML = `<span class="text-success"><i class="fa fa-check"></i> Found ${foundReferrals} referral(s)</span>`;
+                container.style.display = 'block';
+                
+                // Open all PDF previews after processing completes (FIXED: opens all PDFs, not just last)
+                if (pdfsToOpen.length > 0) {
+                    console.log(`📄 Opening ${pdfsToOpen.length} PDF preview(s)...`);
+                    
+                    setTimeout(() => {
+                        pdfsToOpen.forEach(pdfFilename => {
+                            const pdfUrl = `${FLASK_API_URL}/api/pdf/${pdfFilename}`;
+                            console.log('📄 Opening PDF:', pdfUrl);
+                            window.open(pdfUrl, '_blank', 'width=900,height=1000,toolbar=no,menubar=no,scrollbars=yes');
+                        });
+                    }, 500);
+                }
+            } else {
+                statusEl.innerHTML = '<span class="text-muted">No referrals detected in sessions</span>';
+            }
+        }
+
+        // Display a recommendation in the table
+        function displayRecommendation(recommendationId, rec) {
+            const tbody = document.getElementById('recommendations-body');
+            
+            const row = document.createElement('tr');
+            row.className = 'recommendation-row';
+            row.setAttribute('data-recommendation-id', recommendationId);
+            
+            row.innerHTML = `
+                <td>
+                    <strong>${escapeHtml(rec.patient_name)}</strong><br>
+                    <small class="text-muted">${escapeHtml(rec.patient_age)} yo ${escapeHtml(rec.patient_sex)}</small>
+                </td>
+                <td>
+                    <span class="badge badge-info">${escapeHtml(rec.specialty || 'N/A')}</span><br>
+                    <small>${escapeHtml(rec.patient_complaint || '')}</small>
+                </td>
+                <td>
+                    <strong>${escapeHtml(rec.doctor.name)}</strong><br>
+                    <small>${escapeHtml(rec.doctor.clinic)}</small><br>
+                    <small class="text-muted">⭐ ${rec.doctor.rating} | ${rec.doctor.years_experience} yrs</small>
+                </td>
+                <td style="max-width: 300px;">
+                    <div class="clinical-assessment-container" id="clinical-${recommendationId}">
+                        <div class="clinical-assessment-text" style="font-size: 0.85em; white-space: pre-wrap;">${escapeHtml(rec.clinical_triage_note || rec.predictive_alert || 'No clinical note available')}</div>
+                        <a href="javascript:void(0);" class="show-more-link text-primary" style="display: none; font-size: 0.85em;" onclick="toggleClinicalText('${recommendationId}')">Show more</a>
+                    </div>
+                </td>
+                <td>
+                    <span class="badge badge-${rec.insurance.status === 'IN_NETWORK' ? 'success' : 'warning'}">
+                        ${escapeHtml(rec.insurance.plan)}
+                    </span><br>
+                    <small>${escapeHtml(rec.insurance.copay)}</small>
+                </td>
+                <td>
+                    <span class="badge badge-${rec.prior_auth.status === 'PA_NOT_REQUIRED' ? 'success' : 'danger'}">
+                        ${rec.prior_auth.status === 'PA_NOT_REQUIRED' ? 'Not Required' : 'Required'}
+                    </span><br>
+                    <small class="text-muted">${escapeHtml(rec.prior_auth.message)}</small>
+                </td>
+                <td>
+                    <button class="btn btn-sm btn-approve mb-1" onclick="approveReferral('${recommendationId}', this)">
+                        <i class="fa fa-check"></i> Approve
+                    </button><br>
+                    <button class="btn btn-sm btn-deny" onclick="denyReferral(this)">
+                        <i class="fa fa-times"></i> Deny
+                    </button>
+                </td>
+            `;
+            
+            tbody.appendChild(row);
+            
+            // Check if this clinical assessment needs a show more button
+            setTimeout(() => checkClinicalAssessmentOverflow(), 100);
+        }
+
+        // Approve and send the referral
+        async function approveReferral(recommendationId, button) {
+            const row = button.closest('tr');
+            const actionsCell = button.closest('td');
+            
+            // Show loading state
+            actionsCell.innerHTML = '<span class="text-info"><i class="fa fa-spinner fa-spin"></i> Sending...</span>';
+            
+            try {
+                const response = await fetch(`${FLASK_API_URL}/api/send-referral`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ recommendation_id: recommendationId })
+                });
+                
+                const data = await response.json();
+                
+                if (data.status === 'success') {
+                    actionsCell.innerHTML = '<span class="text-success"><i class="fa fa-check-circle"></i> Sent!</span>';
+                    setTimeout(() => {
+                        row.style.opacity = '0';
+                        setTimeout(() => row.remove(), 300);
+                    }, 1500);
+                } else {
+                    actionsCell.innerHTML = `<span class="text-danger"><i class="fa fa-exclamation-triangle"></i> Error: ${escapeHtml(data.message)}</span>`;
+                }
+            } catch (error) {
+                actionsCell.innerHTML = '<span class="text-danger"><i class="fa fa-exclamation-triangle"></i> Network error</span>';
+                console.error('Error sending referral:', error);
+            }
+        }
+
+        // Deny the referral (just remove from display)
+        function denyReferral(button) {
+            const row = button.closest('tr');
+            row.style.opacity = '0';
+            setTimeout(() => row.remove(), 300);
+        }
+
+        // Helper function to escape HTML
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // Toggle show more/less for clinical assessments
+        function toggleClinicalText(recommendationId) {
+            const container = document.getElementById(`clinical-${recommendationId}`);
+            const textDiv = container.querySelector('.clinical-assessment-text');
+            const link = container.querySelector('.show-more-link');
+            
+            if (textDiv.classList.contains('line-clamp-4')) {
+                textDiv.classList.remove('line-clamp-4');
+                link.textContent = 'Show less';
+            } else {
+                textDiv.classList.add('line-clamp-4');
+                link.textContent = 'Show more';
+            }
+        }
+
+        // Check if clinical assessments need show more buttons
+        function checkClinicalAssessmentOverflow() {
+            document.querySelectorAll('.clinical-assessment-container').forEach(container => {
+                const textDiv = container.querySelector('.clinical-assessment-text');
+                const link = container.querySelector('.show-more-link');
+                
+                // Add line-clamp initially
+                textDiv.classList.add('line-clamp-4');
+                
+                // Check if text is overflowing (clamped)
+                if (textDiv.scrollHeight > textDiv.clientHeight + 5) {
+                    link.style.display = 'inline-block';
+                }
+            });
+        }
+        // AI-generated code section ends
+        // ========================================
+
         if (typeof load_location === 'undefined') {
             function load_location(location) {
                 top.restoreSession();
@@ -1015,6 +1261,30 @@ $oemr_ui = new OemrUI($arrOeUiSettings);
 
       .section-header-dynamic {
         border-bottom: none;
+      }
+
+      /* Clinical Assessment line-clamp styles */
+      .line-clamp-4 {
+        display: -webkit-box;
+        -webkit-line-clamp: 4;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      
+      .clinical-assessment-container {
+        position: relative;
+      }
+      
+      .show-more-link {
+        margin-top: 0.25rem;
+        cursor: pointer;
+        font-weight: 500;
+        text-decoration: none;
+      }
+      
+      .show-more-link:hover {
+        text-decoration: underline;
       }
     </style>
     <title><?php echo xlt("Dashboard{{patient file}}"); ?></title>

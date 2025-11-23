@@ -5,6 +5,7 @@ import base64
 import os
 import glob
 import subprocess
+import uuid
 from datetime import datetime
 from mock_db import SPECIALIST_REGISTRY, INSURANCE_PLANS, PROCEDURE_CODES, DIAGNOSIS_CODES, PATIENTS, DEMO_SCENARIOS, PA_RULES, PA_STATUS_CODES
 from pdf_generator import create_referral_pdf
@@ -12,14 +13,27 @@ from pdf_generator import create_referral_pdf
 # ==========================================
 # CONFIGURATION
 # ==========================================
+# CONFIGURATION
+# ==========================================
 # PASTE YOUR N8N URL HERE (Make sure it's the PRODUCTION URL)
 N8N_WEBHOOK_URL = "https://bandisaketh.app.n8n.cloud/webhook/d0e00876-000c-4117-a223-4197c37b9611"
 
 # Anthropic Claude API Configuration
+print(f"🔍 [router.py] Reading ANTHROPIC_API_KEY from environment...")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 CLAUDE_API_URL = "https://api.anthropic.com/v1/messages"
 
-# AI-generated code section ends
+if ANTHROPIC_API_KEY:
+    print(f"✅ [router.py] ANTHROPIC_API_KEY loaded in router.py!")
+    print(f"✅ [router.py] Key (first 20 chars): {ANTHROPIC_API_KEY[:20]}...")
+else:
+    print(f"❌ [router.py] ANTHROPIC_API_KEY is None/Empty in router.py!")
+
+# ==========================================
+# IN-MEMORY STORAGE FOR PENDING RECOMMENDATIONS
+# ==========================================
+# Store pending recommendations (cleared on server restart - suitable for hackathon)
+PENDING_RECOMMENDATIONS = {}
 
 def get_claude_clinical_insight(patient_profile, detected_specialty):
     """
@@ -27,9 +41,26 @@ def get_claude_clinical_insight(patient_profile, detected_specialty):
     """
     # AI-generated code section begins - GitHub Copilot assisted with Claude API integration
     
+    print(f"\n{'='*60}")
+    print(f"🤖 CALLING CLAUDE API")
+    print(f"{'='*60}")
+    print(f"🔑 API Key present: {bool(ANTHROPIC_API_KEY)}")
+    if ANTHROPIC_API_KEY:
+        print(f"🔑 API Key (first 20 chars): {ANTHROPIC_API_KEY[:20]}...")
+        print(f"🔑 API Key length: {len(ANTHROPIC_API_KEY)} chars")
+    else:
+        print(f"❌❌❌ CRITICAL: ANTHROPIC_API_KEY IS NONE OR EMPTY!")
+        return None
+    
+    print(f"🌐 API URL: {CLAUDE_API_URL}")
+    
     # Extract patient data from profile
     patient_history = patient_profile.get('history', [])
     patient_complaint = patient_profile.get('chief_complaint', 'Not specified')
+    
+    print(f"📊 Patient History: {patient_history}")
+    print(f"💬 Chief Complaint: {patient_complaint}")
+    print(f"🏥 Specialty: {detected_specialty}")
     
     # Prepare patient history string
     history_str = ", ".join(patient_history) if isinstance(patient_history, list) else str(patient_history)
@@ -62,27 +93,89 @@ Your Note:"""
         ]
     }
     
+    print(f"\n📤 Sending request to Claude API...")
+    print(f"📝 Full Prompt:\n{prompt}")
+    print(f"\n🔧 Request Headers: {headers}")
+    print(f"🔧 Request Payload Model: {payload['model']}")
+    print(f"🔧 Request Max Tokens: {payload['max_tokens']}")
+    
     try:
+        print(f"\n⏳ Making POST request to {CLAUDE_API_URL}...")
         response = requests.post(CLAUDE_API_URL, headers=headers, json=payload, timeout=30)
+        
+        print(f"\n📥 Claude API Response Status: {response.status_code}")
+        print(f"📥 Response Headers: {dict(response.headers)}")
         
         if response.status_code == 200:
             result = response.json()
+            print(f"📥 Full Response JSON: {result}")
             clinical_insight = result.get("content", [{}])[0].get("text", "")
+            print(f"\n✅✅✅ Claude API Success!")
+            print(f"📏 Response length: {len(clinical_insight)} chars")
+            print(f"📋 Full Claude Response:\n{clinical_insight}")
+            print(f"{'='*60}\n")
             return clinical_insight.strip()
         else:
-            print(f"⚠️ Claude API Error: {response.status_code} - {response.text}")
+            print(f"\n❌❌❌ Claude API Error: HTTP {response.status_code}")
+            print(f"❌ Full Error Response: {response.text}")
+            print(f"{'='*60}\n")
             # Fallback to original predictive alert system
             return None
             
     except requests.exceptions.RequestException as e:
-        print(f"⚠️ Claude API Request Failed: {str(e)}")
+        print(f"⚠️ Claude API Request Failed (Network/Connection Error): {str(e)}")
         # Fallback to original predictive alert system
         return None
     except Exception as e:
         print(f"⚠️ Claude API Unexpected Error: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return None
     
     # AI-generated code section ends
+
+def store_recommendation(recommendation_data):
+    """
+    Store recommendation with UUID key for later retrieval
+    
+    Args:
+        recommendation_data: Complete recommendation dict
+    
+    Returns:
+        str: UUID recommendation_id
+    """
+    recommendation_id = str(uuid.uuid4())
+    PENDING_RECOMMENDATIONS[recommendation_id] = recommendation_data
+    print(f"💾 Stored recommendation: {recommendation_id}")
+    return recommendation_id
+
+def get_recommendation(recommendation_id):
+    """
+    Retrieve stored recommendation by ID
+    
+    Args:
+        recommendation_id: UUID string
+    
+    Returns:
+        dict: Recommendation data or None if not found
+    """
+    recommendation = PENDING_RECOMMENDATIONS.get(recommendation_id)
+    if recommendation:
+        print(f"✅ Retrieved recommendation: {recommendation_id}")
+    else:
+        print(f"❌ Recommendation not found: {recommendation_id}")
+    return recommendation
+
+def remove_recommendation(recommendation_id):
+    """
+    Remove recommendation from storage after sending
+    
+    Args:
+        recommendation_id: UUID string
+    """
+    if recommendation_id in PENDING_RECOMMENDATIONS:
+        del PENDING_RECOMMENDATIONS[recommendation_id]
+        print(f"🗑️  Removed recommendation: {recommendation_id}")
 
 # AI-generated code section begins - GitHub Copilot assisted with creating comprehensive medical transcript analysis
 
@@ -234,6 +327,301 @@ def generate_predictive_alerts(patient_data, clinical_context, transcript_text):
     
     return None
     # AI-generated code section ends
+
+# ==========================================
+# NEW FUNCTIONS FOR TWO-STAGE WORKFLOW
+# ==========================================
+
+def analyze_referral_only(transcript_text, patient_data):
+    """
+    Analyze medical transcript and return recommendation WITHOUT sending email
+    This is the first stage of the two-stage approval workflow
+    
+    Args:
+        transcript_text: Full medical transcript from Heidi session
+        patient_data: Patient demographics and insurance from OpenEMR database
+    
+    Returns:
+        dict: Complete recommendation data
+        {
+            "patient_name": "Emily Brown",
+            "specialty": "cardiology",
+            "doctor": {...},
+            "reasoning": "Patient presents with...",
+            "insurance": {...},
+            "prior_auth": {...},
+            "procedure_codes": [...],
+            "diagnosis_codes": [...],
+            "clinical_summary": "...",
+            "patient_data": {...}
+        }
+        None: If no medical intent detected
+    """
+    print("\n🔍 STAGE 1: ANALYZING REFERRAL (No email sending)")
+    print(f"📋 Transcript length: {len(transcript_text)} characters")
+    print(f"👤 Patient: {patient_data.get('name', 'Unknown')}")
+    
+    # 1. Extract patient information from transcript (fallback if not in patient_data)
+    patient_name = patient_data.get('name') or extract_patient_name(transcript_text)
+    patient_dob = patient_data.get('dob') or extract_patient_dob(transcript_text)
+    patient_age = patient_data.get('age') or extract_patient_age(transcript_text)
+    patient_sex = patient_data.get('sex') or extract_patient_sex(transcript_text)
+    patient_complaint = extract_patient_complaint(transcript_text)
+    patient_insurance = patient_data.get('insurance_plan', 'Unknown')
+    
+    print(f"👤 Patient: {patient_name}, {patient_age}yo {patient_sex}")
+    print(f"💳 Insurance: {patient_insurance}")
+    
+    # 2. Extract clinical context
+    clinical_context = extract_clinical_context(transcript_text)
+    print(f"📋 Clinical Context: {clinical_context[:100]}...")
+    
+    # 3. Detect specialty (moved before clinical note for Claude API)
+    detected_specialty = detect_specialty(transcript_text)
+    if not detected_specialty:
+        print("❌ No medical specialty detected - not a referral")
+        return None
+    
+    print(f"✅ Specialty Detected: {detected_specialty.upper()}")
+    
+    # 4. CLINICAL NOTE ANALYSIS - Use Claude AI for clinical insights
+    # Prepare patient profile for Claude API
+    patient_profile = {
+        'history': patient_data.get('medical_history', []) if patient_data else [],
+        'chief_complaint': patient_complaint or 'Not specified'
+    }
+    
+    clinical_triage_note = get_claude_clinical_insight(patient_profile, detected_specialty)
+    
+    # Fallback to original system if Claude fails
+    if not clinical_triage_note:
+        print("⚠️ Claude API unavailable - using fallback predictive system")
+        clinical_triage_note = generate_predictive_alerts(patient_data, clinical_context, transcript_text)
+    
+    # DIAGNOSTIC PRINT STATEMENT - Confirm clinical note generation
+    print("--- CLINICAL NOTE ---")
+    print("Clinical Reasoning & Risk Assessment:")
+    print(f"Patient History: {patient_profile['history']}")
+    print(f"Chief Complaint: {patient_profile['chief_complaint']}")
+    print(f"Requested Specialty: {detected_specialty}")
+    print(f"Note: {clinical_triage_note}")
+    print("--- END CLINICAL NOTE ---")
+    
+    # 5. Select doctor
+    doctor = select_doctor(detected_specialty)
+    print(f"👨‍⚕️ Doctor: {doctor['name']} at {doctor['clinic']}")
+    print(f"⭐ Rating: {doctor['rating']}/5.0")
+    
+    # 6. Check insurance coverage
+    insurance_result = check_insurance_coverage(detected_specialty, patient_insurance)
+    print(f"💰 Insurance: {insurance_result['status']} (Copay: {insurance_result['copay']})")
+    
+    # 7. Check prior authorization
+    pa_result = check_prior_auth_status(detected_specialty, patient_insurance, transcript_text, clinical_context)
+    print(f"📋 Prior Auth: {pa_result['status']}")
+    
+    # 8. Get medical codes
+    procedure_codes = get_procedure_codes(detected_specialty)
+    diagnosis_codes = get_diagnosis_codes(detected_specialty)
+    print(f"🔬 Medical Codes: {len(procedure_codes)} CPT, {len(diagnosis_codes)} ICD-10")
+    
+    # 9. Generate reasoning text
+    reasoning = f"{patient_name} presents with {clinical_context}. "
+    if insurance_result['status'] == 'IN-NETWORK':
+        reasoning += f"Insurance ({insurance_result['plan']}) covers {detected_specialty} with ${insurance_result['copay']} copay. "
+    else:
+        reasoning += f"Insurance ({insurance_result['plan']}) does not cover {detected_specialty}. "
+    
+    if pa_result['status'] == 'PA_NOT_REQUIRED':
+        reasoning += "No prior authorization required. "
+    elif pa_result['status'] == 'PA_APPROVED_AUTO':
+        reasoning += "Prior authorization auto-approved based on clinical evidence. "
+    else:
+        reasoning += f"Prior authorization pending - additional evidence needed. "
+    
+    reasoning += f"Referral to {detected_specialty} specialist recommended."
+    
+    # 10. Generate PDF for preview
+    print("📄 Generating preview PDF...")
+    print(f"📋 Codes being passed to PDF: {len(procedure_codes)} CPT, {len(diagnosis_codes)} ICD-10")
+    print(f"✅ PA Status: {pa_result.get('status')}")
+    pdf_binary, pdf_filename = create_referral_pdf(
+        patient_name=patient_name,
+        doctor=doctor,
+        insurance_result=insurance_result,
+        clinical_context=clinical_context,
+        procedure_codes=procedure_codes,
+        diagnosis_codes=diagnosis_codes,
+        specialty=detected_specialty,
+        patient_dob=patient_dob,
+        patient_age=patient_age,
+        patient_sex=patient_sex,
+        patient_complaint=patient_complaint,
+        patient_data=patient_data,
+        pa_result=pa_result
+    )
+    
+    # Save preview PDF
+    if pdf_binary and pdf_filename:
+        preview_pdf_filename = f"preview_{pdf_filename}"
+        preview_pdf_path = os.path.join(os.path.dirname(__file__), preview_pdf_filename)
+        
+        with open(preview_pdf_path, 'wb') as f:
+            f.write(pdf_binary)
+        
+        print(f"✅ Preview PDF saved: {preview_pdf_filename} ({len(pdf_binary)} bytes)")
+    else:
+        preview_pdf_filename = None
+        print("⚠️ Preview PDF generation failed")
+    
+    # 11. Build complete recommendation
+    recommendation = {
+        "patient_name": patient_name,
+        "patient_dob": patient_dob,
+        "patient_age": patient_age,
+        "patient_sex": patient_sex,
+        "patient_complaint": patient_complaint,
+        "specialty": detected_specialty,
+        "doctor": doctor,
+        "reasoning": reasoning,
+        "insurance": insurance_result,
+        "prior_auth": pa_result,
+        "procedure_codes": procedure_codes,
+        "diagnosis_codes": diagnosis_codes,
+        "clinical_summary": clinical_context,
+        "clinical_triage_note": clinical_triage_note,  # Claude AI clinical note
+        "patient_data": patient_data,
+        "predictive_alert": clinical_triage_note,  # Use clinical note as alert
+        "transcript": transcript_text,  # Store for later use
+        "pdf_filename": preview_pdf_filename  # Include preview PDF filename
+    }
+    
+    print("✅ STAGE 1 COMPLETE: Recommendation generated with PDF preview")
+    return recommendation
+
+def send_referral_email(recommendation_data):
+    """
+    Send approved referral email with PDF attachment
+    This is the second stage of the two-stage approval workflow
+    
+    Args:
+        recommendation_data: Complete recommendation dict from analyze_referral_only()
+    
+    Returns:
+        dict: Success/failure status
+        {
+            "status": "success",
+            "message": "Referral sent to Dr. Johnson-Martinez",
+            "pdf_filename": "medical_referral_123456.pdf"
+        }
+    """
+    print("\n📧 STAGE 2: SENDING APPROVED REFERRAL")
+    
+    try:
+        # Extract data from recommendation
+        patient_name = recommendation_data['patient_name']
+        doctor = recommendation_data['doctor']
+        specialty = recommendation_data['specialty']
+        insurance_result = recommendation_data['insurance']
+        clinical_context = recommendation_data['clinical_summary']
+        procedure_codes = recommendation_data['procedure_codes']
+        diagnosis_codes = recommendation_data['diagnosis_codes']
+        patient_dob = recommendation_data.get('patient_dob')
+        patient_age = recommendation_data.get('patient_age')
+        patient_sex = recommendation_data.get('patient_sex')
+        patient_complaint = recommendation_data.get('patient_complaint')
+        patient_data = recommendation_data.get('patient_data')
+        pa_result = recommendation_data.get('prior_auth')
+        
+        print(f"👤 Sending referral for: {patient_name}")
+        print(f"👨‍⚕️ To: {doctor['name']} ({specialty})")
+        
+        # 1. Generate PDF
+        print("📄 Generating PDF referral form...")
+        pdf_binary, pdf_filename = create_referral_pdf(
+            patient_name=patient_name,
+            doctor=doctor,
+            insurance_result=insurance_result,
+            clinical_context=clinical_context,
+            procedure_codes=procedure_codes,
+            diagnosis_codes=diagnosis_codes,
+            specialty=specialty,
+            patient_dob=patient_dob,
+            patient_age=patient_age,
+            patient_sex=patient_sex,
+            patient_complaint=patient_complaint,
+            patient_data=patient_data,
+            pa_result=pa_result
+        )
+        
+        if not pdf_binary or not pdf_filename:
+            return {
+                "status": "error",
+                "message": "PDF generation failed"
+            }
+        
+        print(f"✅ PDF generated: {pdf_filename} ({len(pdf_binary)} bytes)")
+        
+        # 2. Generate HTML email
+        print("📧 Generating HTML email...")
+        email_html = generate_referral_email_html(
+            patient_name=patient_name,
+            doctor=doctor,
+            insurance_result=insurance_result,
+            clinical_context=clinical_context,
+            procedure_codes=procedure_codes,
+            diagnosis_codes=diagnosis_codes,
+            specialty=specialty,
+            pdf_filename=pdf_filename,
+            patient_dob=patient_dob,
+            patient_age=patient_age,
+            patient_sex=patient_sex,
+            patient_complaint=patient_complaint,
+            patient_data=patient_data,
+            pa_result=pa_result
+        )
+        
+        # 3. Save PDF temporarily for upload
+        temp_pdf_path = pdf_filename
+        permanent_pdf_path = f"preview_{pdf_filename}"
+        
+        with open(temp_pdf_path, 'wb') as f:
+            f.write(pdf_binary)
+        with open(permanent_pdf_path, 'wb') as f:
+            f.write(pdf_binary)
+        
+        print(f"💾 PDF saved: {temp_pdf_path}")
+        
+        # 4. Send to n8n webhook
+        print("🚀 Sending to n8n webhook...")
+        success = send_to_n8n_with_file(
+            email="inumakisalt123@gmail.com",
+            subject=f"Medical Referral: {patient_name} - {specialty.title()} Consultation",
+            email_html=email_html,
+            pdf_file_path=temp_pdf_path,
+            pdf_filename=pdf_filename,
+            patient_name=patient_name
+        )
+        
+        if success:
+            print(f"✅ STAGE 2 COMPLETE: Referral sent to {doctor['name']}")
+            return {
+                "status": "success",
+                "message": f"Referral sent to {doctor['name']}",
+                "pdf_filename": pdf_filename
+            }
+        else:
+            return {
+                "status": "error",
+                "message": "Failed to send email via n8n webhook"
+            }
+            
+    except Exception as e:
+        print(f"❌ Error sending referral: {e}")
+        return {
+            "status": "error",
+            "message": f"Error: {str(e)}"
+        }
 
 def analyze_transcript(transcript_text):
     """
@@ -526,25 +914,109 @@ def extract_clinical_context(text):
     # AI-generated code section ends
 
 def detect_specialty(text):
-    """Dynamically detect medical specialty from registry keys"""
+    """
+    Detect medical specialty based on symptoms and clinical keywords
+    Uses weighted scoring to find the most relevant specialty
+    """
     text_lower = text.lower()
     
-    for specialty in SPECIALIST_REGISTRY.keys():
-        if specialty in text_lower:
-            return specialty
-    
-    # Check for common synonyms
-    specialty_synonyms = {
-        "cardiology": ["heart", "cardiac", "cardiologist"],
-        "dermatology": ["skin", "dermatologist", "derm"],
-        "orthopedics": ["bone", "joint", "orthopedic", "ortho"],
-        "neurology": ["brain", "neurologist", "neuro", "nerve"]
+    # Comprehensive symptom-to-specialty mapping
+    # Each specialty has keywords with weights (more specific = higher weight)
+    specialty_keywords = {
+        "cardiology": {
+            # Cardiovascular symptoms and conditions
+            "chest pain": 10, "angina": 10, "myocardial infarction": 10, "heart attack": 10,
+            "palpitation": 8, "arrhythmia": 8, "tachycardia": 8, "bradycardia": 8,
+            "heart": 5, "cardiac": 7, "cardiovascular": 7, "coronary": 7,
+            "hypertension": 6, "high blood pressure": 6, "atrial fibrillation": 8,
+            "shortness of breath": 4, "dyspnea": 4, "edema": 4, "murmur": 7,
+            # Respiratory symptoms that might need cardiology (chest-related)
+            "cough": 3, "sob": 3, "breath": 2, "lung": 2, "respiratory": 2,
+            "nsclc": 3, "lung cancer": 3, "copd": 3, "pneumonia": 2
+        },
+        "dermatology": {
+            # Skin-specific conditions (NOT just the word "skin")
+            "rash": 10, "lesion": 9, "mole": 9, "melanoma": 10, "basal cell": 10,
+            "acne": 10, "eczema": 10, "psoriasis": 10, "dermatitis": 10,
+            "itching": 7, "pruritus": 8, "hives": 9, "urticaria": 9,
+            "wart": 9, "abscess": 7, "cellulitis": 8, "skin cancer": 10,
+            "biopsy of skin": 9, "skin biopsy": 9, "dermatologist": 8
+        },
+        "orthopedics": {
+            # Musculoskeletal conditions
+            "fracture": 10, "broken bone": 10, "sprain": 9, "strain": 8,
+            "back pain": 9, "neck pain": 9, "joint pain": 9, "arthritis": 9,
+            "osteoarthritis": 9, "rheumatoid": 8, "disc herniation": 10,
+            "sciatica": 10, "bone": 6, "joint": 6, "ligament": 8, "tendon": 8,
+            "knee": 5, "hip": 5, "shoulder": 5, "spine": 7, "vertebra": 8,
+            "orthopedic": 8, "ortho": 7, "musculoskeletal": 8
+        },
+        "neurology": {
+            # Neurological symptoms
+            "headache": 8, "migraine": 10, "seizure": 10, "epilepsy": 10,
+            "stroke": 10, "tia": 10, "transient ischemic": 10, "paralysis": 10,
+            "numbness": 8, "tingling": 7, "weakness": 6, "tremor": 9,
+            "parkinson": 10, "multiple sclerosis": 10, "ms": 7, "alzheimer": 10,
+            "dementia": 9, "neuropathy": 9, "brain": 7, "neurologist": 8,
+            "dizziness": 6, "vertigo": 8, "syncope": 8, "confusion": 6
+        },
+        "gastroenterology": {
+            # GI symptoms
+            "abdominal pain": 10, "stomach pain": 9, "nausea": 7, "vomiting": 7,
+            "diarrhea": 9, "constipation": 9, "reflux": 9, "gerd": 10,
+            "ibs": 10, "crohn": 10, "colitis": 10, "ulcer": 9,
+            "bowel": 7, "intestinal": 7, "colon": 8, "rectal": 8,
+            "hemorrhoid": 8, "gastro": 7, "hepatitis": 10, "cirrhosis": 10,
+            "pancreatitis": 10, "gallstone": 9, "jaundice": 9
+        },
+        "psychiatry": {
+            # Mental health conditions
+            "depression": 10, "anxiety": 10, "panic": 9, "ptsd": 10,
+            "bipolar": 10, "schizophrenia": 10, "psychosis": 10,
+            "suicidal": 10, "self-harm": 10, "mood disorder": 10,
+            "ocd": 10, "obsessive": 8, "compulsive": 8, "insomnia": 7,
+            "psychiatrist": 9, "mental health": 8, "therapy": 5
+        },
+        "pediatrics": {
+            # Pediatric-specific
+            "child": 8, "infant": 9, "newborn": 9, "baby": 8, "toddler": 8,
+            "pediatric": 10, "pediatrician": 10, "growth delay": 9,
+            "vaccination": 7, "immunization": 7, "developmental delay": 9,
+            "well child": 9, "fever in child": 8
+        }
     }
     
-    for specialty, synonyms in specialty_synonyms.items():
-        for synonym in synonyms:
-            if synonym in text_lower:
-                return specialty
+    # Score each specialty based on keyword matches
+    specialty_scores = {}
+    
+    for specialty, keywords in specialty_keywords.items():
+        score = 0
+        for keyword, weight in keywords.items():
+            # Count occurrences of each keyword
+            count = text_lower.count(keyword)
+            if count > 0:
+                # Add weight, but diminishing returns for multiple occurrences
+                score += weight * min(count, 3)  # Cap at 3 occurrences
+        
+        if score > 0:
+            specialty_scores[specialty] = score
+    
+    # Return the specialty with highest score, if any
+    if specialty_scores:
+        best_specialty = max(specialty_scores, key=specialty_scores.get)
+        best_score = specialty_scores[best_specialty]
+        
+        # Require minimum score to avoid false positives
+        if best_score >= 5:
+            print(f"🎯 Specialty Detection Scores: {specialty_scores}")
+            print(f"✅ Selected: {best_specialty} (score: {best_score})")
+            return best_specialty
+    
+    # Fallback: check if specialty name appears directly in text
+    for specialty in SPECIALIST_REGISTRY.keys():
+        if specialty in text_lower:
+            print(f"✅ Found specialty name '{specialty}' in text")
+            return specialty
     
     return None
 

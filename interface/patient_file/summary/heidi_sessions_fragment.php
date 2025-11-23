@@ -31,6 +31,36 @@ $session_count = sqlNumRows($sessions);
         <?php echo xlt("No Heidi scribe sessions found for this patient."); ?>
     </span>
 <?php } else { ?>
+    <!-- Implement Workflow Button -->
+    <div class="mb-3">
+        <button type="button" class="btn btn-primary btn-sm" onclick="analyzeForReferrals()">
+            <i class="fa fa-paper-plane"></i> <?php echo xlt('Implement Workflow'); ?>
+        </button>
+        <span id="workflow-status" class="ml-2"></span>
+    </div>
+    
+    <!-- Recommendations Container (hidden by default) -->
+    <div id="recommendations-container" class="mb-4" style="display: none;">
+        <h5 class="text-info"><i class="fa fa-lightbulb-o"></i> <?php echo xlt('Referral Recommendations'); ?></h5>
+        <div class="table-responsive">
+            <table class="table table-bordered table-sm" id="recommendations-table">
+                <thead class="thead-light">
+                    <tr>
+                        <th><?php echo xlt('Patient'); ?></th>
+                        <th><?php echo xlt('Specialty'); ?></th>
+                        <th><?php echo xlt('Doctor'); ?></th>
+                        <th><?php echo xlt('Clinical Assessment'); ?></th>
+                        <th><?php echo xlt('Insurance'); ?></th>
+                        <th><?php echo xlt('Prior Auth'); ?></th>
+                        <th><?php echo xlt('Actions'); ?></th>
+                    </tr>
+                </thead>
+                <tbody id="recommendations-body">
+                    <!-- Recommendations will be inserted here dynamically -->
+                </tbody>
+            </table>
+        </div>
+    </div>
     <div class="heidi-sessions-list">
         <?php
         $index = 0;
@@ -89,4 +119,29 @@ $session_count = sqlNumRows($sessions);
 .heidi-session-item .collapse {
     transition: all 0.3s ease;
 }
+#recommendations-container {
+    background-color: #f8f9fa;
+    border: 1px solid #dee2e6;
+    border-radius: 5px;
+    padding: 15px;
+}
+.recommendation-row {
+    animation: fadeIn 0.5s;
+}
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(-10px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+.btn-approve {
+    background-color: #28a745;
+    border-color: #28a745;
+    color: white;
+}
+.btn-deny {
+    background-color: #dc3545;
+    border-color: #dc3545;
+    color: white;
+}
 </style>
+
+<!-- JavaScript functions moved to demographics.php for global scope -->
