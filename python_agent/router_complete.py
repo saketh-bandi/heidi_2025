@@ -210,39 +210,41 @@ def analyze_transcript(transcript_text):
                 f.write(pdf_binary)
             with open(permanent_pdf_path, 'wb') as f:
                 f.write(pdf_binary)
-                
+            
             print(f"💾 Temporary PDF saved: {temp_pdf_path} ({len(pdf_binary)} bytes)")
             print(f"🔍 Preview PDF saved: {permanent_pdf_path}")
             
-            # Auto-open the PDF for preview (macOS) - ALWAYS ENABLED
+            # AUTOMATIC PDF PREVIEW - Open the file for user review
             try:
                 subprocess.run(['open', permanent_pdf_path], check=False)
                 print(f"👀 PDF automatically opened: {permanent_pdf_path}")
                 print(f"📄 Preview should appear in your default PDF viewer")
-            except Exception as e:
-                print(f"⚠️ Could not auto-open PDF: {e}")
-                print(f"💡 Manually open with: open {permanent_pdf_path}")
-                # Try alternative methods
-                try:
-                    import webbrowser
-                    webbrowser.open(f'file://{os.path.abspath(permanent_pdf_path)}')
-                    print(f"🌐 Opened PDF in browser as fallback")
-                except Exception as e2:
-                    print(f"⚠️ Browser fallback failed: {e2}")
+            except Exception as preview_error:
+                print(f"⚠️ Could not auto-open PDF: {preview_error}")
                 
         except Exception as e:
-            print(f"❌ Failed to save temporary PDF: {e}")
+            print(f"❌ Error saving PDF to disk: {e}")
             temp_pdf_path = None
     
-    # 11. SEND TO N8N WEBHOOK WITH MULTIPART FILE UPLOAD
-    return send_to_n8n_with_file(
+    # 11. SEND EMAIL WITH PDF ATTACHMENT using multipart/form-data
+    success = send_to_n8n_with_file(
         email="inumakisalt123@gmail.com",
-        subject=f"Urgent Referral: {patient_name} - {detected_specialty.title()} Consultation",
+        subject=f"Urgent Referral: {patient_name} - {detected_specialty.capitalize()} Consultation",
         email_html=email_html,
         pdf_file_path=temp_pdf_path,
         pdf_filename=pdf_filename,
-        patient_name=patient_name  # Pass patient name explicitly
+        patient_name=patient_name
     )
+    
+    # 12. CLEANUP - Remove temporary file but keep preview
+    if temp_pdf_path and os.path.exists(temp_pdf_path):
+        try:
+            os.remove(temp_pdf_path)
+            print(f"🗑️ Temporary PDF file deleted: {temp_pdf_path}")
+        except Exception as cleanup_error:
+            print(f"⚠️ Could not delete temporary file: {cleanup_error}")
+    
+    return success
 
 def extract_patient_name(text):
     """Extract patient name from transcript using enhanced regex patterns for hyphenated names"""
@@ -277,19 +279,89 @@ def extract_patient_name(text):
     elif match4:  
         name = match4.group(1).strip()
         # Check if it looks like a real name (First Last format)
-        if len(name.split()) == 2 and all(word.istitle() for word in name.split()):
+        if len(name.split()) >= 2 and all(word.istitle() for word in name.split()):
             return name
     
-    return "Walk-In Patient"
+    return "Patient Name Not Found"
+
+def extract_patient_dob(text):
+    """Extract date of birth from transcript"""
+    # Pattern: date formats like MM/DD/YYYY, MM-DD-YYYY, Month DD, YYYY
+    dob_patterns = [
+        r"(?:date of birth|DOB|born)(?:\s+is)?\s+(\d{1,2}[/-]\d{1,2}[/-]\d{4})",
+        r"(?:date of birth|DOB|born)(?:\s+is)?\s+([A-Z][a-z]+\s+\d{1,2},?\s+\d{4})",
+        r"(\d{1,2}[/-]\d{1,2}[/-]\d{4})",
+    ]
+    
+    for pattern in dob_patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            return match.group(1).strip()
+    
+    return None
+
+def extract_patient_age(text):
+    """Extract patient age from transcript"""
+    # Pattern: "X year old" or "X years old" or "age X"
+    age_patterns = [
+        r"(\d{1,3})\s+years?\s+old",
+        r"age\s+(\d{1,3})",
+        r"(\d{1,3})\s*yo"
+    ]
+    
+    for pattern in age_patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            return match.group(1).strip()
+    
+    return None
+
+def extract_patient_sex(text):
+    """Extract patient sex from transcript"""
+    # Pattern: "male" or "female" or pronouns
+    if re.search(r'\b(?:male|man|he|his|him)\b', text, re.IGNORECASE):
+        return "Male"
+    elif re.search(r'\b(?:female|woman|she|her)\b', text, re.IGNORECASE):
+        return "Female"
+    
+    return None
+
+def extract_patient_complaint(text):
+    """Extract chief complaint from transcript"""
+    # Look for symptom-related keywords and complaints
+    complaint_patterns = [
+        r"complaining of ([^.!?]+)",
+        r"presenting with ([^.!?]+)",
+        r"has been experiencing ([^.!?]+)",
+        r"reports ([^.!?]+)",
+        r"symptoms of ([^.!?]+)"
+    ]
+    
+    for pattern in complaint_patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            complaint = match.group(1).strip()
+            if len(complaint) > 10:  # Reasonable length check
+                return complaint[:100]  # Truncate if too long
+    
+    # Fallback: Look for common symptoms
+    symptom_keywords = ['pain', 'ache', 'swelling', 'rash', 'fever', 'nausea', 'bleeding', 'headache']
+    for keyword in symptom_keywords:
+        if keyword in text.lower():
+            # Try to extract sentence containing the symptom
+            sentences = re.split(r'[.!?]+', text)
+            for sentence in sentences:
+                if keyword in sentence.lower():
+                    return sentence.strip()[:100]
+    
+    return None
 
 def extract_clinical_context(text):
-    """Enhanced clinical context extraction with better symptom detection"""
-    # AI-generated code section begins - GitHub Copilot assisted with improved clinical context extraction
-    
-    # Split text into sentences for better analysis
+    """Extract clinical reasoning and context from transcript"""
+    # This function extracts the clinical reasoning behind the referral
     sentences = re.split(r'[.!?]+', text)
     
-    # Enhanced symptom keywords for better detection
+    # Define symptom and clinical keywords
     symptom_keywords = [
         'pain', 'complains', 'swelling', 'headache', 'chest pain', 'shortness of breath',
         'rash', 'lesion', 'mole', 'skin', 'itching', 'burning',
@@ -343,43 +415,44 @@ def extract_clinical_context(text):
             if len(context) > 15:
                 return context[:200] + ("..." if len(context) > 200 else "")
     
-    # Strategy 4: Fallback to first 150 characters
-    fallback_context = text.strip()[:150]
-    if len(text.strip()) > 150:
-        fallback_context += "..."
-    
-    return fallback_context if fallback_context else "General consultation requested - no specific symptoms documented"
-    
-    # AI-generated code section ends
+    # Fallback: Return a generic clinical context
+    return "Clinical evaluation and specialist consultation requested"
 
 def detect_specialty(text):
-    """Dynamically detect medical specialty from registry keys"""
+    """Detect medical specialty from transcript"""
     text_lower = text.lower()
     
+    # Check against our specialty registry
     for specialty in SPECIALIST_REGISTRY.keys():
         if specialty in text_lower:
             return specialty
     
-    # Check for common synonyms
-    specialty_synonyms = {
-        "cardiology": ["heart", "cardiac", "cardiologist"],
-        "dermatology": ["skin", "dermatologist", "derm"],
-        "orthopedics": ["bone", "joint", "orthopedic", "ortho"],
-        "neurology": ["brain", "neurologist", "neuro", "nerve"]
+    # Fallback keyword mapping
+    specialty_keywords = {
+        'cardiology': ['heart', 'cardiac', 'cardiovascular', 'chest pain', 'palpitations', 'murmur'],
+        'dermatology': ['skin', 'rash', 'lesion', 'mole', 'dermatitis', 'acne', 'psoriasis'],
+        'orthopedics': ['bone', 'joint', 'fracture', 'knee', 'hip', 'back pain', 'arthritis'],
+        'pediatrics': ['child', 'pediatric', 'infant', 'baby', 'adolescent'],
+        'neurology': ['brain', 'neurological', 'seizure', 'headache', 'migraine', 'stroke'],
+        'gastroenterology': ['stomach', 'digestive', 'bowel', 'gastro', 'abdominal', 'nausea'],
+        'psychiatry': ['mental', 'psychiatric', 'depression', 'anxiety', 'therapy', 'psychological']
     }
     
-    for specialty, synonyms in specialty_synonyms.items():
-        for synonym in synonyms:
-            if synonym in text_lower:
-                return specialty
+    for specialty, keywords in specialty_keywords.items():
+        if any(keyword in text_lower for keyword in keywords):
+            return specialty
     
     return None
 
 def select_doctor(specialty):
-    """Select the best available doctor from the specialty"""
+    """Select appropriate doctor from specialty registry"""
+    if specialty not in SPECIALIST_REGISTRY:
+        # Fallback to cardiology if specialty not found
+        specialty = "cardiology"
+    
     doctors = SPECIALIST_REGISTRY[specialty]
-    # For demo, select highest rated doctor
-    return max(doctors, key=lambda x: x['rating'])
+    # For demo, return the first doctor (you could add more sophisticated selection logic)
+    return doctors[0]
 
 def check_insurance_coverage(specialty, patient_insurance_plan=None):
     """Check insurance coverage for the detected specialty using patient's actual insurance"""
@@ -617,294 +690,51 @@ def send_to_n8n_with_file(email, subject, email_html, pdf_file_path=None, pdf_fi
             "subject": subject,
             "email_html": email_html,
             "patient_name": patient_name or "Unknown Patient",
-            "content_type": "medical_referral"
+            "content_type": "text/html"
         }
         
+        # Prepare the file for multipart upload
         files = {}
+        if pdf_file_path and os.path.exists(pdf_file_path):
+            print(f"📎 PDF file attached: {pdf_filename} ({os.path.getsize(pdf_file_path)} bytes)")
+            with open(pdf_file_path, 'rb') as pdf_file:
+                files = {
+                    'file': (pdf_filename, pdf_file.read(), 'application/pdf')
+                }
         
-        # Add PDF file if available
-        if pdf_file_path and pdf_filename:
-            try:
-                # Open the PDF file for multipart upload
-                with open(pdf_file_path, 'rb') as pdf_file:
-                    # Read file content
-                    pdf_content = pdf_file.read()
-                    
-                # Add file to files dict (n8n expects 'file' parameter)
-                files['file'] = (pdf_filename, pdf_content, 'application/pdf')
-                print(f"📎 PDF file attached: {pdf_filename} ({len(pdf_content)} bytes)")
-                
-            except Exception as e:
-                print(f"❌ Failed to read PDF file: {e}")
-                files = {}
-        
-        # Send multipart request with both data and files
         print(f"🌐 Sending POST request to n8n...")
         print(f"📤 Data fields being sent: {list(data.keys())}")
         print(f"📎 File fields being sent: {list(files.keys())}")
         
+        # Send POST request with multipart/form-data (files + data)
         response = requests.post(
-            N8N_WEBHOOK_URL, 
-            data=data,  # Form data fields (accessible as $json.body.email, $json.body.subject, etc.)
-            files=files,  # File attachment (accessible as $binary.file)
-            timeout=15
+            N8N_WEBHOOK_URL,
+            data=data,  # Form data
+            files=files,  # File attachments
+            timeout=30
         )
-        
-        # Clean up temporary file
-        if pdf_file_path:
-            try:
-                os.remove(pdf_file_path)
-                print(f"🗑️ Temporary PDF file deleted: {pdf_file_path}")
-            except Exception as e:
-                print(f"⚠️ Warning: Could not delete temporary file: {e}")
         
         if response.status_code == 200:
             print("✅ SUCCESS: Referral email with PDF attachment sent to n8n!")
             print("📧 Email notification should arrive shortly")
             return True
         else:
-            print(f"❌ n8n Webhook Error: {response.status_code}")
-            print(f"Response: {response.text[:500]}")
+            print(f"❌ FAILED: n8n returned status {response.status_code}")
+            print(f"Response: {response.text[:200]}...")
             return False
             
     except requests.exceptions.Timeout:
-        print("❌ Timeout: n8n webhook took too long to respond")
+        print("❌ TIMEOUT: n8n request timed out after 30 seconds")
         return False
-    except requests.exceptions.ConnectionError:
-        print("❌ Connection Error: Could not reach n8n webhook")
+    except requests.exceptions.RequestException as e:
+        print(f"❌ REQUEST ERROR: Failed to send to n8n: {e}")
         return False
     except Exception as e:
-        print(f"❌ Unexpected Error: {e}")
+        print(f"❌ UNEXPECTED ERROR: {e}")
         return False
     
     # AI-generated code section ends
-# AI-generated code section ends
 
-# ==========================================
-# TEST RUNNER - Single Test Mode (No Email Spam) - REMOVED
-# ==========================================
-    print("   - 'Sarah needs dermatology for her rash'")
-    print("   - 'Patient has headaches, refer to neurology'") 
-    print("   - 'The weather is nice today' (should fail)")
-    
-# AI-generated code section ends
-
-# AI-generated code section begins - GitHub Copilot assisted with patient data extraction functions
-
-def extract_patient_dob(text):
-    """Extract patient date of birth from transcript"""
-    # Pattern 1: "DOB is MM/DD/YYYY" or "date of birth MM/DD/YYYY"
-    pattern1 = r"(?:dob|date of birth)(?:\s+is)?\s+(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})"
-    match1 = re.search(pattern1, text, re.IGNORECASE)
-    
-    # Pattern 2: "born on MM/DD/YYYY" or "born MM/DD/YYYY"
-    pattern2 = r"born(?:\s+on)?\s+(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})"
-    match2 = re.search(pattern2, text, re.IGNORECASE)
-    
-    # Pattern 3: Standalone date pattern
-    pattern3 = r"\b(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})\b"
-    match3 = re.search(pattern3, text)
-    
-    if match1:
-        return match1.group(1)
-    elif match2:
-        return match2.group(1)
-    elif match3:
-        # Only use standalone date if context suggests it's DOB
-        if any(word in text.lower() for word in ['birth', 'age', 'old', 'years']):
-            return match3.group(1)
-    
-    return None
-
-def extract_patient_age(text):
-    """Extract patient age from transcript"""
-    # Pattern 1: "XX year old" or "XX years old"
-    pattern1 = r"(?:is\s+a\s+)?(\d{1,3})\s+years?\s+old"
-    match1 = re.search(pattern1, text, re.IGNORECASE)
-    
-    # Pattern 2: "age is XX" or "age XX"
-    pattern2 = r"age(?:\s+is)?\s+(\d{1,3})"
-    match2 = re.search(pattern2, text, re.IGNORECASE)
-    
-    # Pattern 3: "XXyo" (year old abbreviation)
-    pattern3 = r"(\d{1,3})\s*yo\b"
-    match3 = re.search(pattern3, text, re.IGNORECASE)
-    
-    if match1:
-        age = int(match1.group(1))
-        if 0 <= age <= 120:  # Reasonable age range
-            return str(age)
-    elif match2:
-        age = int(match2.group(1))
-        if 0 <= age <= 120:
-            return str(age)
-    elif match3:
-        age = int(match3.group(1))
-        if 0 <= age <= 120:
-            return str(age)
-    
-    return None
-
-def extract_patient_sex(text):
-    """Extract patient sex/gender from transcript"""
-    text_lower = text.lower()
-    
-    # Look for explicit mentions
-    male_indicators = ['male', 'he is', 'his', 'him', 'man', 'gentleman', 'mr.']
-    female_indicators = ['female', 'she is', 'her', 'woman', 'lady', 'ms.', 'mrs.']
-    
-    male_count = sum(1 for indicator in male_indicators if indicator in text_lower)
-    female_count = sum(1 for indicator in female_indicators if indicator in text_lower)
-    
-    if male_count > female_count and male_count > 0:
-        return "Male"
-    elif female_count > male_count and female_count > 0:
-        return "Female"
-    
-    # Look for specific patterns
-    if re.search(r'\bgender\s+(?:is\s+)?(?:male|m)\b', text_lower):
-        return "Male"
-    elif re.search(r'\bgender\s+(?:is\s+)?(?:female|f)\b', text_lower):
-        return "Female"
-    elif re.search(r'\bsex\s+(?:is\s+)?(?:male|m)\b', text_lower):
-        return "Male"
-    elif re.search(r'\bsex\s+(?:is\s+)?(?:female|f)\b', text_lower):
-        return "Female"
-    
-    return None
-
-def extract_patient_complaint(text):
-    """Extract patient's main complaint from transcript"""
-    # Enhanced complaint extraction patterns
-    complaint_patterns = [
-        r'complaining\s+(?:of\s+)?([^.!?]+)',
-        r'chief\s+complaint\s+(?:is\s+)?([^.!?]+)',
-        r'presenting\s+with\s+([^.!?]+)',
-        r'has\s+been\s+experiencing\s+([^.!?]+)',
-        r'reports\s+([^.!?]+)',
-        r'suffering\s+from\s+([^.!?]+)',
-        r'problem\s+(?:is\s+)?([^.!?]+)',
-        r'concern\s+(?:is\s+)?([^.!?]+)'
-    ]
-    
-    for pattern in complaint_patterns:
-        match = re.search(pattern, text, re.IGNORECASE)
-        if match:
-            complaint = match.group(1).strip()
-            # Clean up the complaint text
-            if len(complaint) > 10 and len(complaint) < 200:
-                return complaint
-    
-    # Fallback to symptom keywords
-    symptom_keywords = [
-        'pain', 'swelling', 'headache', 'chest pain', 'shortness of breath',
-        'rash', 'lesion', 'joint pain', 'back pain', 'dizziness',
-        'nausea', 'fever', 'fatigue', 'anxiety', 'depression'
-    ]
-    
-    text_lower = text.lower()
-    found_symptoms = []
-    for symptom in symptom_keywords:
-        if symptom in text_lower:
-            found_symptoms.append(symptom)
-    
-    if found_symptoms:
-        return ", ".join(found_symptoms[:3])  # Return up to 3 symptoms
-    
-    return None
-
-# AI-generated code section ends
-
-# AI-generated code section ends
-
-# ==========================================
-# TEST RUNNER - Single Test Mode (No Email Spam) - REMOVED
-# ==========================================
-    print("   - 'Sarah needs dermatology for her rash'")
-    print("   - 'Patient has headaches, refer to neurology'") 
-    print("   - 'The weather is nice today' (should fail)")
-    
-# AI-generated code section ends
-
-# AI-generated code section begins - GitHub Copilot assisted with PDF preview functionality
-
-def test_with_pdf_preview():
-    """Interactive test that shows the PDF and lets user customize the test"""
-    print("🧪 INTERACTIVE PDF PREVIEW TEST")
-    print("=" * 50)
-    
-    # Ask user for custom input or use default
-    print("\n📝 Choose your test:")
-    print("1. Default cardiology referral (John Smith)")
-    print("2. Custom transcript input")
-    
-    choice = input("Enter choice (1 or 2, default=1): ").strip() or "1"
-    
-    if choice == "2":
-        print("\n📋 Enter your medical transcript:")
-        custom_transcript = input("Transcript: ").strip()
-        if not custom_transcript:
-            print("⚠️ Empty transcript, using default...")
-            custom_transcript = None
-    else:
-        custom_transcript = None
-    
-    # Use default or custom transcript
-    if custom_transcript:
-        test_transcript = custom_transcript
-    else:
-        test_transcript = """
-        I need to refer John Smith to cardiology. He is a 48 year old male, date of birth is 03/15/1975. 
-        He has been complaining of chest pain with exertion and shortness of breath. 
-        The patient reports these episodes occur during physical activity and resolve with rest. 
-        He also mentions palpitations and some dizziness. 
-        No radiation of pain to arms or jaw, but increased frequency over the past 2 weeks.
-        """
-    
-    print(f"\n🚀 Processing transcript...")
-    result = analyze_transcript(test_transcript)
-    
-    print(f"\n{'✅ SUCCESS' if result else '❌ FAILED'}")
-    
-    # Show available PDFs
-    preview_pdfs = glob.glob("preview_medical_referral_*.pdf")
-    if preview_pdfs:
-        latest_pdf = max(preview_pdfs, key=os.path.getctime)
-        print(f"📄 Latest PDF: {latest_pdf}")
-        
-        # Ask if user wants to open it again
-        reopen = input("\n🔄 Open PDF again? (y/n, default=n): ").strip().lower()
-        if reopen == 'y':
-            try:
-                subprocess.run(['open', latest_pdf], check=False)
-                print(f"👀 PDF reopened: {latest_pdf}")
-            except Exception as e:
-                print(f"❌ Could not reopen PDF: {e}")
-    
-    return result
-
-# AI-generated code section ends
-
-# ==========================================
-# QUICK CUSTOM TEST FUNCTION
-# ==========================================
-
-def quick_custom_test(custom_transcript):
-    """Run a quick test with custom transcript and auto PDF preview"""
-    print("🚀 PROCESSING CUSTOM TRANSCRIPT")
-    print("=" * 50)
-    print(f"📝 Transcript: {custom_transcript[:100]}...")
-    
-    result = analyze_transcript(custom_transcript)
-    
-    print("\n" + "=" * 50)
-    print(f"🎯 RESULT: {'✅ SUCCESS' if result else '❌ FAILED'}")
-    print("📧 Email sent! 📄 PDF opened!")
-    
-    return result
-
-# ==========================================
-# MAIN EXECUTION - Run router.py directly
 # ==========================================
 
 if __name__ == "__main__":
@@ -959,5 +789,3 @@ if __name__ == "__main__":
     print("🎉 System ready for next referral!")
 
 # AI-generated code section ends
-
-
