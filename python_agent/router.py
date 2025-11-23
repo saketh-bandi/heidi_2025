@@ -6,7 +6,7 @@ import os
 import glob
 import subprocess
 from datetime import datetime
-from mock_db import SPECIALIST_REGISTRY, INSURANCE_PLANS, PROCEDURE_CODES, DIAGNOSIS_CODES, PATIENTS, DEMO_SCENARIOS
+from mock_db import SPECIALIST_REGISTRY, INSURANCE_PLANS, PROCEDURE_CODES, DIAGNOSIS_CODES, PATIENTS, DEMO_SCENARIOS, PA_RULES, PA_STATUS_CODES
 from pdf_generator import create_referral_pdf
 
 # AI-generated code section begins - GitHub Copilot assisted with creating comprehensive medical transcript analysis
@@ -23,6 +23,88 @@ def get_patient_from_database(patient_name):
         if patient['name'].lower() == patient_name.lower():
             return patient
     return None
+    # AI-generated code section ends
+
+def check_prior_auth_status(specialty, insurance_plan, transcript_text, clinical_context):
+    """Check Prior Authorization status using 2-step decision process"""
+    # AI-generated code section begins - GitHub Copilot assisted with Prior Authorization logic
+    
+    # Step 1: Check if PA rule applies for this insurance+specialty combination
+    if insurance_plan not in PA_RULES:
+        return {
+            "status": "PA_NOT_REQUIRED",
+            "message": PA_STATUS_CODES["PA_NOT_REQUIRED"],
+            "missing_evidence": [],
+            "rule_found": False
+        }
+    
+    plan_rules = PA_RULES[insurance_plan]
+    
+    # Check for specific specialty rule
+    specialty_rule = plan_rules.get(specialty)
+    if not specialty_rule:
+        # Check for general rule
+        specialty_rule = plan_rules.get("general")
+        if not specialty_rule:
+            return {
+                "status": "PA_NOT_REQUIRED", 
+                "message": PA_STATUS_CODES["PA_NOT_REQUIRED"],
+                "missing_evidence": [],
+                "rule_found": False
+            }
+    
+    # If PA is not required for this combination
+    if not specialty_rule.get("required", False):
+        return {
+            "status": "PA_NOT_REQUIRED",
+            "message": PA_STATUS_CODES["PA_NOT_REQUIRED"], 
+            "missing_evidence": [],
+            "rule_found": True
+        }
+    
+    # Step 2: PA is required - check for auto-approval conditions first
+    auto_approve_conditions = specialty_rule.get("auto_approve_conditions", [])
+    combined_text = f"{transcript_text} {clinical_context}".lower()
+    
+    for condition in auto_approve_conditions:
+        if condition.lower() in combined_text:
+            return {
+                "status": "PA_APPROVED_AUTO",
+                "message": PA_STATUS_CODES["PA_APPROVED_AUTO"],
+                "missing_evidence": [],
+                "rule_found": True,
+                "auto_approve_reason": condition
+            }
+    
+    # Step 3: Check if required clinical justification keywords are present
+    required_keywords = specialty_rule.get("required_clinical_justification", [])
+    missing_evidence = []
+    found_keywords = []
+    
+    for keyword in required_keywords:
+        if keyword.lower() in combined_text:
+            found_keywords.append(keyword)
+        else:
+            missing_evidence.append(keyword)
+    
+    # Determine final status based on evidence found
+    if len(found_keywords) >= len(required_keywords) * 0.5:  # At least 50% of keywords found
+        return {
+            "status": "PA_APPROVED_AUTO",
+            "message": PA_STATUS_CODES["PA_APPROVED_AUTO"],
+            "missing_evidence": [],
+            "rule_found": True,
+            "found_evidence": found_keywords
+        }
+    else:
+        return {
+            "status": "PA_PENDING_EVIDENCE", 
+            "message": PA_STATUS_CODES["PA_PENDING_EVIDENCE"],
+            "missing_evidence": missing_evidence[:3],  # Show top 3 missing items
+            "rule_found": True,
+            "found_evidence": found_keywords
+        }
+    
     # AI-generated code section ends
 
 def generate_predictive_alerts(patient_data, clinical_context, transcript_text):
@@ -150,6 +232,12 @@ def analyze_transcript(transcript_text):
     insurance_result = check_insurance_coverage(detected_specialty, patient_insurance)
     print(f"💰 Insurance Status: {insurance_result['status']} ({insurance_result['plan']})")
     print(f"💵 Patient Copay: {insurance_result['copay']}")
+    
+    # 6.5. CHECK PRIOR AUTHORIZATION STATUS
+    pa_result = check_prior_auth_status(detected_specialty, patient_insurance, transcript_text, clinical_context)
+    print(f"📋 Prior Auth Status: {pa_result['status']}")
+    if pa_result.get('missing_evidence'):
+        print(f"⚠️ Missing Evidence: {', '.join(pa_result['missing_evidence'][:2])}...")
 
     # 7. GET RELEVANT MEDICAL CODES with robust fallbacks
     procedure_codes = get_procedure_codes(detected_specialty)
@@ -194,7 +282,8 @@ def analyze_transcript(transcript_text):
         patient_age=patient_age,
         patient_sex=patient_sex,
         patient_complaint=patient_complaint,
-        patient_data=patient_data  # Pass full enhanced patient data
+        patient_data=patient_data,  # Pass full enhanced patient data
+        pa_result=pa_result  # Pass Prior Authorization result
     )
     
     # 10. SAVE PDF TO DISK TEMPORARILY FOR MULTIPART FILE UPLOAD
@@ -412,7 +501,7 @@ def get_diagnosis_codes(specialty):
     """Get relevant ICD-10 diagnosis codes for the specialty with default fallback"""
     return DIAGNOSIS_CODES.get(specialty, DIAGNOSIS_CODES.get("default", []))
 
-def generate_referral_email_html(patient_name, doctor, insurance_result, clinical_context, procedure_codes, diagnosis_codes, specialty, pdf_filename=None, patient_dob=None, patient_age=None, patient_sex=None, patient_complaint=None, patient_data=None):
+def generate_referral_email_html(patient_name, doctor, insurance_result, clinical_context, procedure_codes, diagnosis_codes, specialty, pdf_filename=None, patient_dob=None, patient_age=None, patient_sex=None, patient_complaint=None, patient_data=None, pa_result=None):
     """Generate professional HTML referral email - Smart Backend Implementation"""
     # AI-generated code section begins - GitHub Copilot assisted with professional medical referral HTML generation
     
@@ -449,6 +538,20 @@ def generate_referral_email_html(patient_name, doctor, insurance_result, clinica
     network_style = ""
     if insurance_result['status'] == "OUT-OF-NETWORK":
         network_style = "color: #dc3545; font-weight: bold;"
+    
+    # Determine PA status styling and content
+    pa_style = ""
+    pa_icon = "📋"
+    if pa_result:
+        if pa_result['status'] == "PA_NOT_REQUIRED":
+            pa_style = "color: #28a745; font-weight: bold;"
+            pa_icon = "✅"
+        elif pa_result['status'] == "PA_APPROVED_AUTO":
+            pa_style = "color: #17a2b8; font-weight: bold;"
+            pa_icon = "🎉"
+        elif pa_result['status'] == "PA_PENDING_EVIDENCE":
+            pa_style = "color: #ffc107; font-weight: bold;"
+            pa_icon = "⏳"
     
     html_template = f"""
     <!DOCTYPE html>
@@ -550,6 +653,20 @@ def generate_referral_email_html(patient_name, doctor, insurance_result, clinica
             
             {f'<div class="info-item" style="margin-top: 15px;"><span class="label">🚨 Emergency Contact:</span> {patient_data["emergency_contact"]}</div>' if patient_data and patient_data.get('emergency_contact') else ''}
         </div>
+
+        {f'''<div class="section" style="border: 3px solid #ffc107; background: #fff3cd;">
+            <h2>{pa_icon} PRIOR AUTHORIZATION STATUS</h2>
+            <div class="info-item">
+                <span class="label">Status:</span> 
+                <span style="{pa_style}">{pa_result["status"]}</span>
+            </div>
+            <div class="info-item">
+                <span class="label">Details:</span> {pa_result["message"]}
+            </div>
+            {f'<div class="info-item"><span class="label">⚠️ Missing Evidence:</span> <ul>{"".join([f"<li>{evidence}</li>" for evidence in pa_result["missing_evidence"]])}</ul></div>' if pa_result.get("missing_evidence") else ''}
+            {f'<div class="info-item"><span class="label">✅ Found Evidence:</span> {", ".join(pa_result["found_evidence"])}</div>' if pa_result.get("found_evidence") else ''}
+            {f'<div class="info-item"><span class="label">Auto-Approve Reason:</span> {pa_result["auto_approve_reason"]}</div>' if pa_result.get("auto_approve_reason") else ''}
+        </div>''' if pa_result else ''}
 
         <div class="section">
             <h2>🔬 CLINICAL INFORMATION</h2>

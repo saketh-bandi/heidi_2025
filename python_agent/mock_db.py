@@ -852,4 +852,63 @@ DEMO_SCENARIOS = [
     }
 ]
 
+# ==========================================
+# 17. PRIOR AUTHORIZATION (PA) RULES ENGINE
+# ==========================================
+
+PA_RULES = {
+    "UnitedHealth Premium": {
+        "neurology": {
+            "required": True,
+            "required_clinical_justification": [
+                "severe headache", "migraine", "seizure", "neurological symptoms", 
+                "memory loss", "confusion", "numbness", "tingling", "weakness"
+            ],
+            "auto_approve_conditions": ["stroke", "seizure", "emergency"]
+        },
+        "gastroenterology": {
+            "required": True,
+            "required_clinical_justification": [
+                "abdominal pain", "digestive issues", "nausea", "vomiting", 
+                "bowel problems", "bleeding", "weight loss"
+            ],
+            "auto_approve_conditions": ["gastrointestinal bleeding", "severe abdominal pain"]
+        },
+        "psychiatry": {
+            "required": True,
+            "required_clinical_justification": [
+                "depression", "anxiety", "mental health", "psychological symptoms",
+                "mood disorder", "psychiatric", "behavioral issues"
+            ],
+            "auto_approve_conditions": ["severe depression", "emergency"]
+        }
+    },
+    "Cigna Select": {
+        "cardiology": {
+            "required": True,
+            "required_clinical_justification": [
+                "chest pain", "heart palpitations", "shortness of breath",
+                "cardiac symptoms", "heart murmur", "irregular heartbeat"
+            ],
+            "auto_approve_conditions": ["acute chest pain", "heart attack", "cardiac emergency"]
+        }
+    },
+    "Health Net Basic": {
+        "pediatrics": {
+            "required": True,
+            "required_clinical_justification": [
+                "developmental delay", "behavioral problems", "growth issues",
+                "childhood illness", "pediatric concerns"
+            ],
+            "auto_approve_conditions": ["pediatric emergency", "severe illness"]
+        }
+    }
+}
+
+PA_STATUS_CODES = {
+    "PA_NOT_REQUIRED": "Prior Authorization Not Required",
+    "PA_APPROVED_AUTO": "Prior Authorization Auto-Approved", 
+    "PA_PENDING_EVIDENCE": "Prior Authorization Pending - Additional Clinical Evidence Required"
+}
+
 # AI-generated code section ends
